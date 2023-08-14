@@ -3,104 +3,7 @@
 #include <assert.h>
 #include <math.h>
 #include <time.h>
-
-typedef struct {
-  size_t rows;
-  size_t cols;
-  float *data;
-} Mat;
-
-typedef enum {
-  NO_TRANS,
-  TRANSA,
-  TRANSB
-} T_flag;
-
-#define ENTRY(m, i, j) (m).data[(i) * (m).cols + (j)]
-
-#define SHOW_COST 0
-#define EPOCHS 10000
-#define RATE 1
-
-typedef struct {
-  Mat *ws;
-  Mat *bs;
-  size_t* shape;
-  size_t count; // length ws, bs
-  size_t layers; // length shape
-} NN;
-
-void mat_print(Mat m);
-Mat mat_alloc(size_t rows, size_t cols);
-NN nn_alloc(size_t nlayers, size_t* shape);
-void nn_print(NN nn);
-float randf();
-void mat_rand(Mat m);
-void nn_rand(NN nn);
-float sigmoid(float x);
-void mat_sigmoid(Mat m);
-void mat_mul(Mat c, Mat a, Mat b, T_flag flag);
-void mat_scale(Mat m, float k);
-void mat_add(Mat a, Mat b);
-void mat_sub(Mat a, Mat b);
-void mat_copy(Mat dest, Mat src);
-void nn_forward(NN nn, Mat* xs, Mat input);
-void mat_fill(Mat m, float val);
-void nn_fill(NN nn, float val);
-void nn_backprop(NN nn, Mat* xs, Mat y_truth, float rate);
-void nn_learn(NN nn, Mat *xs, Mat* x_train, Mat* y_train, size_t n);
-float mse(Mat x, Mat y);
-
-
-int main() {
-  srand(time(NULL));
-  
-  size_t shape[] = {2, 2, 1};
-  NN nn = nn_alloc(3, shape);
-  nn_rand(nn);
-
-  // XOR training data
-  Mat x[4], y[4];
-  
-  for (size_t i = 0; i < 4; i++) {
-    x[i] = mat_alloc(2, 1);
-    y[i] = mat_alloc(1, 1);
-  }
-  
-  float
-    x0[] = {0, 0}, y0[] = {0},
-    x1[] = {1, 0}, y1[] = {1},
-    x2[] = {0, 1}, y2[] = {1},
-    x3[] = {1, 1}, y3[] = {0};
-  
-  x[0].data = x0, y[0].data = y0;
-  x[1].data = x1, y[1].data = y1;
-  x[2].data = x2, y[2].data = y2;
-  x[3].data = x3, y[3].data = y3;
-
-  Mat acts[3];
-  acts[0] = mat_alloc(2, 1);
-  acts[1] = mat_alloc(2, 1);
-  acts[2] = mat_alloc(1, 1);
-
-  for (size_t i = 0; i < 4; i++) {
-    nn_forward(nn, acts, x[i]);
-    Mat y_pred = acts[2];
-    printf("\n");
-    printf("%d ^ %d = %f", (int)x[i].data[0], (int)x[i].data[1], y_pred.data[0]);
-  }
-
-  printf("\n");
-  nn_learn(nn, acts, x, y, 4);
-  
-  for (size_t i = 0; i < 4; i++) {
-    nn_forward(nn, acts, x[i]);
-    Mat y_pred = acts[2];
-    printf("\n");
-    printf("%d ^ %d = %f", (int)x[i].data[0], (int)x[i].data[1], y_pred.data[0]);
-  }
-  return 0;
-}
+#include "nn.h"
 
 void mat_print(Mat m) {
   printf("\n");
@@ -132,6 +35,10 @@ Mat mat_alloc(size_t rows, size_t cols) {
   return m;
 }
 
+void mat_free(Mat m) {
+  free(m.data);
+}
+
 NN nn_alloc(size_t nlayers, size_t* shape) {
   NN nn;
   nn.layers = nlayers;
@@ -150,6 +57,24 @@ NN nn_alloc(size_t nlayers, size_t* shape) {
 
   return nn;
 }
+
+void nn_free(NN nn) {
+  for (size_t i = 0; i < nn.count; i++) {
+    mat_free(nn.ws[i]);
+    mat_free(nn.bs[i]);
+  }
+}
+
+// Fisher-Yates shuffle
+void shuffle_indices(size_t *arr, int len) {
+  for (int i = len-1; i > 0 ; i--) {
+    int j = rand() % (i + 1);
+    size_t temp = arr[j];
+    arr[j] = arr[i];
+    arr[i] = temp;
+  }
+}
+
 
 float randf() {
   return  (float)rand() / (float)RAND_MAX - 0.5f;
@@ -284,6 +209,7 @@ void nn_fill(NN nn, float val) {
   }
 }
 
+// TODO: allocate g once and pass as parameter rather than on each backprop
 void nn_backprop(NN nn, Mat* xs, Mat y_truth, float rate) {
   NN g = nn_alloc(nn.layers, nn.shape);
   nn_fill(g, 0.0f);
@@ -323,26 +249,35 @@ void nn_backprop(NN nn, Mat* xs, Mat y_truth, float rate) {
     mat_sub(nn.ws[i], g.ws[i]);
     mat_sub(nn.bs[i], g.bs[i]);
   }
+  nn_free(g);
 }
 
 void nn_learn(NN nn, Mat *xs, Mat* x_train, Mat* y_train, size_t n) {
+  size_t indices[n];
+  for (size_t i = 0; i < n; i++) {
+    indices[i] = i;
+  }
+  
   for (size_t i = 0; i < EPOCHS; i++) {
-
-#if SHOW_COST
+    shuffle_indices(indices, n);
+    
+#ifdef SHOW_COST
     float cost = 0.0;
 #endif
     
     for (size_t j = 0; j < n; j++) {
-      nn_forward(nn, xs, x_train[j]);
+      //printf("training point %d\n", j);
+      size_t idx = indices[j];
+      nn_forward(nn, xs, x_train[idx]);
 
-#if SHOW_COST
-      cost += mse(xs[nn.layers - 1], y_train[j]);
+#ifdef SHOW_COST
+      cost += mat_mse(xs[nn.layers - 1], y_train[idx]);
 #endif
       
-      nn_backprop(nn, xs, y_train[j], RATE);
+      nn_backprop(nn, xs, y_train[idx], RATE);
     }
 
-#if SHOW_COST
+#ifdef SHOW_COST
     cost /= n;
     printf("cost = %f\n", cost);
 #endif
@@ -350,7 +285,7 @@ void nn_learn(NN nn, Mat *xs, Mat* x_train, Mat* y_train, size_t n) {
   }
 }
 
-float mse(Mat x, Mat y) {
+float mat_mse(Mat x, Mat y) {
   assert(x.rows == y.rows && x.cols == y.cols);
   float c = 0.0;
   for (size_t i = 0; i < x.rows; i++) {
@@ -362,3 +297,5 @@ float mse(Mat x, Mat y) {
   return c / (x.rows * x.cols);
 }
 
+//// 1. nn_save(nn, "./mymodel.txt)
+//// 2. nn_load("./mymodel.txt")
